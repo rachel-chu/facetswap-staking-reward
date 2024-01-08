@@ -1,0 +1,105 @@
+pragma :rubidity, "1.0.0"
+
+contract :StakingRewards, is: [:IStakingRewards, :RewardsDistributionRecipient, :ReentrancyGuard, :Pausable] do
+    # State Variables
+    IERC20 :rewardsToken
+    IERC20 :stakingToken
+    uint256 :periodFinish = 0
+    uint256 :rewardRate = 0
+    uint256 :rewardsDuration = 604800 # 7 days in seconds
+    uint256 :lastUpdateTime
+    uint256 :rewardPerTokenStored
+
+    mapping(:address, :uint256) :userRewardPerTokenPaid
+    mapping(:address, :uint256) :rewards
+
+    uint256 :_totalSupply
+    mapping(:address, :uint256) :_balances
+
+    # Constructor
+    constructor(address _owner, address _rewardsDistribution, address _rewardsToken, address _stakingToken) do
+        s.rewardsToken = IERC20(_rewardsToken)
+        s.stakingToken = IERC20(_stakingToken)
+        s.rewardsDistribution = _rewardsDistribution
+    end
+
+    # View Functions
+    function :totalSupply, {}, :external, :view, returns: :uint256 do
+        return s._totalSupply
+    end
+
+    function :balanceOf, {account: :address}, :external, :view, returns: :uint256 do
+        return s._balances[account]
+    end
+
+    function :lastTimeRewardApplicable, {}, :public, :view, returns: :uint256 do
+        return [block.timestamp, s.periodFinish].min
+    end
+
+    function :rewardPerToken, {}, :public, :view, returns: :uint256 do
+        if s._totalSupply == 0 then
+            return s.rewardPerTokenStored
+        else
+            return s.rewardPerTokenStored + ((lastTimeRewardApplicable - s.lastUpdateTime) * s.rewardRate * 1e18) / s._totalSupply
+        end
+    end
+
+    function :earned, {account: :address}, :public, :view, returns: :uint256 do
+        return (s._balances[account] * (rewardPerToken - s.userRewardPerTokenPaid[account]) / 1e18) + s.rewards[account]
+    end
+
+    function :getRewardForDuration, {}, :external, :view, returns: :uint256 do
+        return s.rewardRate * s.rewardsDuration
+    end
+
+    # Mutative Functions
+    function :stake, {amount: :uint256}, :external, :nonReentrant, :notPaused, :updateReward, msg.sender do
+        require(amount > 0, "Cannot stake 0")
+        s._totalSupply += amount
+        s._balances[msg.sender] += amount
+        s.stakingToken.safeTransferFrom(msg.sender, address(this), amount)
+        emit :Staked, {user: msg.sender, amount: amount}
+    end
+
+    # Withdraw Function
+    function :withdraw, {amount: :uint256}, :public, :nonReentrant, :updateReward, msg.sender do
+        require(amount > 0, "Cannot withdraw 0")
+        s._totalSupply -= amount
+        s._balances[msg.sender] -= amount
+        s.stakingToken.safeTransfer(msg.sender, amount)
+        emit :Withdrawn, {user: msg.sender, amount: amount}
+    end
+
+    # Get Reward Function
+    function :getReward, {}, :public, :nonReentrant, :updateReward, msg.sender do
+        uint256 reward = s.rewards[msg.sender]
+        if reward > 0 then
+            s.rewards[msg.sender] = 0
+            s.rewardsToken.safeTransfer(msg.sender, reward)
+            emit :RewardPaid, {user: msg.sender, reward: reward}
+        end
+    end
+
+    # Exit Function
+    function :exit, {}, :external do
+        withdraw(amount: s._balances[msg.sender])
+        getReward
+    end
+
+    # Modifiers
+    modifier :updateReward, {account: :address} do
+        s.rewardPerTokenStored = rewardPerToken
+        s.lastUpdateTime = lastTimeRewardApplicable
+        if account != address(0) then
+            s.rewards[account] = earned(account: account)
+            s.userRewardPerTokenPaid[account] = s.rewardPerTokenStored
+        end
+        yield # Continues execution after the modifier logic
+    end
+
+    # Events
+    event :RewardAdded, {reward: :uint256}
+    event :Staked, {user: :address, amount: :uint256}
+    # Additional events as needed
+
+end
